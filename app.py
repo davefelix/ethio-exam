@@ -6,160 +6,135 @@ import time
 import os
 
 # --- 1. CLOUD SECURITY ---
-# This pulls the key from Streamlit's secret vault when you go live
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     client = genai.Client(api_key=API_KEY)
 except Exception:
     st.error("Setup Error: Please add GEMINI_API_KEY to Streamlit Secrets.")
 
-st.set_page_config(page_title="Ethiopian Exam AI", layout="wide")
+st.set_page_config(page_title="EthioExam AI", page_icon="🇪🇹", layout="wide")
 
-# --- 2. INTERFACE STYLE (CSS) ---
+# --- 2. INTERFACE STYLE ---
 st.markdown("""
     <style>
-    .stRadio [role=radiogroup]{ 
-        background-color: #f0f2f6; 
-        padding: 20px; 
-        border-radius: 15px; 
-        border: 1px solid #ddd; 
-    }
-    .timer { 
-        font-size: 22px; 
-        font-weight: bold; 
-        color: #d9534f; 
-        text-align: right; 
-        padding-bottom: 10px;
-    }
-    .question-box {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #007bff;
-        margin-bottom: 20px;
-    }
+    .stRadio [role=radiogroup]{ background-color: #f8f9fa; padding: 15px; border-radius: 12px; border: 1px solid #ddd; }
+    .timer { font-size: 22px; font-weight: bold; color: #d9534f; text-align: right; }
+    .main-card { background-color: #ffffff; padding: 25px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. PERSISTENT STORAGE (The Digital Library) ---
+# --- 3. PERSISTENT BOOK STORAGE ---
 def get_book_store(grade, subject):
     store_id = f"store_g{grade}_{subject.lower()}"
     if store_id not in st.session_state:
-        # Create a persistent store so it only reads the PDF once
         store = client.file_search_stores.create(config={'display_name': store_id})
         path = f"textbooks/grade{grade}_{subject.lower()}.pdf"
         if os.path.exists(path):
-            with st.spinner("AI is indexing the textbook... please wait."):
+            with st.spinner(f"Reading {subject} Grade {grade} Textbook..."):
                 client.file_search_stores.upload_to_file_search_store(
                     file_search_store_name=store.name, file=path
                 )
             st.session_state[store_id] = store.name
         else:
-            st.error(f"Missing file: {path}. Please upload it to your 'textbooks' folder.")
+            st.error(f"⚠️ File Not Found: Please ensure '{path}' is in the textbooks folder.")
             return None
     return st.session_state[store_id]
 
-# --- 4. SESSION MANAGEMENT ---
+# --- 4. SESSION STATE ---
 if "questions" not in st.session_state:
     st.session_state.update({"questions": [], "current_idx": 0, "answers": {}, "start_time": None, "done": False})
 
-# --- 5. SIDEBAR ---
-st.sidebar.title("🇪🇹 Ethio-Exam AI")
-grade = st.sidebar.selectbox("Select Grade", [9, 10, 11, 12])
-subject = st.sidebar.selectbox("Subject", ["Physics", "Biology", "Chemistry", "Maths"])
-chapter = st.sidebar.text_input("Chapter Name/Number")
+# --- 5. SIDEBAR NAVIGATION ---
+st.sidebar.header("🎓 National Exam Prep")
+grade_choice = st.sidebar.selectbox("Select Grade", [9, 10, 11, 12])
+subject_choice = st.sidebar.selectbox("Select Subject", ["Maths", "Physics", "Biology", "Chemistry"])
 
-if st.sidebar.button("Generate 30 Questions") and chapter:
-    sid = get_book_store(grade, subject)
-    if sid:
-        # Prompting Gemini to return structured JSON from the File Search tool
-        prompt = f"Using the textbook, go to {chapter}. Generate 30 Multiple Choice Questions (15 conceptual, 15 calculational). Return ONLY a JSON array: [{{'q':'','a':'','b':'','c':'','d':'','ans':'a','exp':''}}]"
-        
-        with st.spinner("Creating 30 fresh questions..."):
-            response = client.models.generate_content(
-                model="gemini-2.0-flash", 
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(file_search=types.FileSearch(file_search_store_names=[sid]))]
-                )
-            )
-            
-            try:
-                json_str = response.text.replace("```json","").replace("```","").strip()
-                st.session_state.update({
-                    "questions": json.loads(json_str), 
-                    "current_idx": 0, 
-                    "answers": {}, 
-                    "start_time": time.time(), 
-                    "done": False
-                })
-                st.rerun()
-            except:
-                st.error("The AI failed to format the JSON. Please try generating again.")
+# Since unit counts vary, we let the user type the Unit Number/Name
+unit_choice = st.sidebar.text_input("Enter Unit/Chapter (e.g., Unit 1 or Unit 4)")
+
+if st.sidebar.button("✨ Generate 30 Questions"):
+    if not unit_choice:
+        st.sidebar.warning("Please enter a Unit name or number.")
+    else:
+        sid = get_book_store(grade_choice, subject_choice)
+        if sid:
+            prompt = f"""
+            Identify '{unit_choice}' in the {subject_choice} Grade {grade_choice} textbook.
+            Generate 30 Multiple Choice Questions from this unit ONLY.
+            - 15 Conceptual/Theory questions.
+            - 15 Calculation/Application questions (if applicable).
+            Return ONLY a valid JSON array: 
+            [{{"q":"question","a":"opt1","b":"opt2","c":"opt3","d":"opt4","ans":"a","exp":"explanation"}}]
+            """
+            with st.spinner("AI is analyzing the textbook and drafting 30 unique questions..."):
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash", 
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            tools=[types.Tool(file_search=types.FileSearch(file_search_store_names=[sid]))]
+                        )
+                    )
+                    json_str = response.text.replace("```json","").replace("```","").strip()
+                    st.session_state.update({
+                        "questions": json.loads(json_str), 
+                        "current_idx": 0, "answers": {}, 
+                        "start_time": time.time(), "done": False
+                    })
+                    st.rerun()
+                except Exception as e:
+                    st.error("Generation failed. Please check your Unit Name and try again.")
 
 # --- 6. EXAM ENGINE ---
 if st.session_state.questions and not st.session_state.done:
-    # 40 Minute Timer (2400 seconds)
+    # 40-minute Countdown
     rem = max(0, 2400 - int(time.time() - st.session_state.start_time))
-    st.markdown(f'<p class="timer">⏳ Time Remaining: {rem//60:02d}:{rem%60:02d}</p>', unsafe_allow_html=True)
+    m, s = divmod(rem, 60)
+    st.markdown(f'<p class="timer">⏳ Time: {m:02d}:{s:02d}</p>', unsafe_allow_html=True)
     
-    if rem <= 0: 
+    if rem <= 0:
         st.session_state.done = True
         st.rerun()
 
-    curr = st.session_state.current_idx
-    q_data = st.session_state.questions[curr]
+    idx = st.session_state.current_idx
+    q = st.session_state.questions[idx]
     
-    st.progress((curr + 1) / 30)
-    st.write(f"### Question {curr + 1} of 30")
+    st.progress((idx + 1) / 30)
+    st.write(f"### Question {idx + 1} of 30")
     
-    st.markdown(f'<div class="question-box">{q_data["q"]}</div>', unsafe_allow_html=True)
-    
-    opts = [f"A) {q_data['a']}", f"B) {q_data['b']}", f"C) {q_data['c']}", f"D) {q_data['d']}"]
-    
-    # Pre-select if user returns to this question
-    existing_ans_idx = None
-    if curr in st.session_state.answers:
-        existing_ans_idx = "abcd".find(st.session_state.answers[curr])
+    with st.container():
+        st.markdown(f'<div class="main-card"><strong>{q["q"]}</strong></div>', unsafe_allow_html=True)
+        st.write("")
+        
+        opts = [f"A) {q['a']}", f"B) {q['b']}", f"C) {q['c']}", f"D) {q['d']}"]
+        # Maintain selection if user goes back
+        current_ans = st.session_state.answers.get(idx, None)
+        index = "abcd".find(current_ans) if current_ans else None
+        
+        choice = st.radio("Choose the correct answer:", opts, key=f"radio_{idx}", index=index)
+        if choice:
+            st.session_state.answers[idx] = choice[0].lower()
 
-    choice = st.radio("Choose the best option:", opts, key=f"q{curr}", index=existing_ans_idx)
-    
-    if choice:
-        st.session_state.answers[curr] = choice[0].lower()
-
-    # Navigation Buttons
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col1:
-        if st.button("⬅️ Previous") and curr > 0: 
-            st.session_state.current_idx -= 1
-            st.rerun()
-    with col3:
-        if curr < 29:
-            if st.button("Next Question ➡️"): 
-                st.session_state.current_idx += 1
-                st.rerun()
+    # Nav
+    col1, col2 = st.columns([1,1])
+    if col1.button("⬅️ Previous") and idx > 0:
+        st.session_state.current_idx -= 1
+        st.rerun()
+    if col2.button("Next ➡️" if idx < 29 else "🏁 Finish"):
+        if idx < 29:
+            st.session_state.current_idx += 1
         else:
-            if st.button("🏁 FINISH & SUBMIT"): 
-                st.session_state.done = True
-                st.rerun()
+            st.session_state.done = True
+        st.rerun()
 
-# --- 7. RESULTS & EXPLANATIONS ---
+# --- 7. RESULTS ---
 if st.session_state.done:
-    st.header("Exam Results")
     score = sum(1 for i, q in enumerate(st.session_state.questions) if st.session_state.answers.get(i) == q['ans'])
-    
-    st.balloons()
-    st.metric("Total Score", f"{score} / 30", f"{int((score/30)*100)}%")
-    
-    st.write("---")
-    st.write("### Detailed Review")
+    st.header("🎯 Your Results")
+    st.metric("Final Score", f"{score}/30", f"{int((score/30)*100)}%")
     
     for i, q in enumerate(st.session_state.questions):
-        user_ans = st.session_state.answers.get(i, "None")
-        is_correct = user_ans == q['ans']
-        
-        with st.expander(f"Q{i+1}: {'✅' if is_correct else '❌'} {q['q'][:50]}..."):
-            st.write(f"**Full Question:** {q['q']}")
-            st.write(f"**Your Answer:** {user_ans.upper()}")
+        with st.expander(f"Q{i+1}: {q['q'][:60]}..."):
+            st.write(f"**Question:** {q['q']}")
             st.write(f"**Correct Answer:** {q['ans'].upper()}")
-            st.info(f"**Textbook Explanation:** {q['exp']}")
+            st.info(f"**Explanation:** {q['exp']}")
