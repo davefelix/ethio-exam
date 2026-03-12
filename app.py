@@ -6,118 +6,135 @@ import time
 import os
 import re
 
-# --- 1. CLOUD SECURITY ---
+# --- 1. SETUP & SECURITY ---
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     client = genai.Client(api_key=API_KEY)
 except Exception:
-    st.error("Setup Error: Please add GEMINI_API_KEY to Streamlit Secrets.")
+    st.error("🔑 API Key Missing! Please add it to Streamlit Secrets.")
 
 st.set_page_config(page_title="EthioExam AI", page_icon="🇪🇹", layout="wide")
 
-# --- 2. CLEANER NAMING ---
-def clean_name(text):
-    # API names must be lowercase, alphanumeric, or dashes only
-    return re.sub(r'[^a-z0-9-]', '', text.lower())
-
+# --- 2. THE BRAIN (File Search) ---
 def get_book_store(grade, subject):
-    # Ensure name is valid for Google API
-    clean_sid = clean_name(f"store-g{grade}-{subject}")
+    # API names must be simple: no spaces, lowercase only
+    store_id = f"store-g{grade}-{subject.lower()}"
     
-    if clean_sid not in st.session_state:
+    if store_id not in st.session_state:
         try:
-            # Check if store already exists on Google's side to avoid "Already Exists" error
-            store = client.file_search_stores.create(config={'display_name': clean_sid})
+            # Step A: Create a 'Knowledge Store' on Google's Server
+            store = client.file_search_stores.create(config={'display_name': store_id})
             path = f"textbooks/grade{grade}_{subject.lower()}.pdf"
             
             if os.path.exists(path):
-                with st.spinner(f"AI is reading {subject}..."):
+                with st.status(f"📖 Reading Grade {grade} {subject}...", expanded=True) as status:
+                    # Step B: Upload the PDF
                     op = client.file_search_stores.upload_to_file_search_store(
                         file_search_store_name=store.name, file=path
                     )
+                    # Step C: Wait for the AI to 'Finish Reading' (Index)
                     while not op.done:
                         time.sleep(2)
                         op = client.operations.get(op)
-                st.session_state[clean_sid] = store.name
+                    status.update(label="✅ Textbook Ready!", state="complete")
+                st.session_state[store_id] = store.name
             else:
-                st.error(f"File '{path}' missing in GitHub!")
+                st.error(f"❌ File not found: {path}")
                 return None
         except Exception as e:
-            st.error(f"API Error during upload: {str(e)}")
+            st.error(f"⚠️ API Connection Error. Please wait 60 seconds. ({str(e)})")
             return None
-    return st.session_state[clean_sid]
+    return st.session_state[store_id]
 
 # --- 3. SESSION STATE ---
 if "chapters" not in st.session_state:
-    st.session_state.update({"chapters": [], "questions": [], "current_idx": 0, "answers": {}, "done": False})
+    st.session_state.update({
+        "chapters": [], "questions": [], "current_idx": 0, 
+        "answers": {}, "done": False, "scanning": False
+    })
 
 # --- 4. SIDEBAR ---
-st.sidebar.header("🎓 Exam Settings")
-grade = st.sidebar.selectbox("Grade", [9, 10, 11, 12])
-sub = st.sidebar.selectbox("Subject", ["Maths", "Physics", "Biology", "Chemistry"])
+st.sidebar.title("🇪🇹 EthioExam AI")
+grade = st.sidebar.selectbox("Choose Grade", [9, 10, 11, 12])
+sub = st.sidebar.selectbox("Choose Subject", ["Maths", "Physics", "Biology", "Chemistry"])
 
-if st.sidebar.button("🔍 Scan for Chapters"):
+# SCAN BUTTON
+if st.sidebar.button("🔍 Step 1: Scan Chapters", disabled=st.session_state.scanning):
+    st.session_state.scanning = True
     sid = get_book_store(grade, sub)
     if sid:
-        with st.spinner("Listing Units..."):
-            # Use a slightly more stable model name if 'flash' fails
-            prompt = "List all Unit/Chapter names from this book. Just names, comma-separated."
-            try:
-                response = client.models.generate_content(
-                    model="gemini-1.5-flash", 
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(file_search=types.FileSearch(file_search_store_names=[sid]))]
-                    )
+        prompt = "Look at the Table of Contents. List ONLY the Unit/Chapter titles as a comma-separated list. Do not write anything else."
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(file_search=types.FileSearch(file_search_store_names=[sid]))]
                 )
-                st.session_state.chapters = [c.strip() for c in response.text.split(",")]
-                st.rerun()
-            except Exception as e:
-                st.error(f"Scan Failed: {str(e)}")
+            )
+            st.session_state.chapters = [c.strip() for c in response.text.split(",")]
+            st.session_state.scanning = False
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error("Quota full. Wait 1 minute.")
+            st.session_state.scanning = False
 
-# --- 5. EXAM GENERATION ---
-if st.session_state.chapters:
-    selected_chapter = st.selectbox("Pick a Chapter:", st.session_state.chapters)
+# --- 5. MAIN INTERFACE ---
+if st.session_state.chapters and not st.session_state.questions:
+    st.markdown("### 📖 Step 2: Pick your Unit")
+    selected = st.selectbox("Which chapter should we focus on?", st.session_state.chapters)
+    
     if st.button("🚀 Start 30-Question Exam"):
         sid = get_book_store(grade, sub)
-        prompt = f"Using the PDF, find '{selected_chapter}'. Generate 30 MCQs. Return ONLY a JSON array."
+        prompt = f"Using the textbook, go to '{selected}'. Generate 30 MCQs. Format: JSON array ONLY. Include 'q', 'a', 'b', 'c', 'd', 'ans', 'exp'."
         
-        with st.spinner("Generating..."):
+        with st.spinner("AI is drafting your exam..."):
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.0-flash", 
+                    model="gemini-2.0-flash",
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         tools=[types.Tool(file_search=types.FileSearch(file_search_store_names=[sid]))]
                     )
                 )
-                # Clean the response for JSON
-                raw = response.text.strip().lstrip('```json').rstrip('```').strip()
-                st.session_state.update({
-                    "questions": json.loads(raw), 
-                    "current_idx": 0, "answers": {}, "start_time": time.time(), "done": False
-                })
+                clean_json = response.text.strip().lstrip('```json').rstrip('```').strip()
+                st.session_state.questions = json.loads(clean_json)
+                st.session_state.start_time = time.time()
                 st.rerun()
-            except Exception as e:
-                st.error(f"Generation Failed: {str(e)}")
+            except:
+                st.error("Error generating questions. Try again in a moment.")
 
-# --- 6. EXAM ENGINE (Simple) ---
+# --- 6. EXAM ENGINE ---
 if st.session_state.questions and not st.session_state.done:
     idx = st.session_state.current_idx
     q = st.session_state.questions[idx]
-    st.subheader(f"Question {idx + 1}")
+    
+    # Header & Progress
+    st.progress((idx + 1) / len(st.session_state.questions))
+    st.write(f"**Question {idx + 1} of {len(st.session_state.questions)}**")
+    
+    # The Question
     st.info(q['q'])
-    ans = st.radio("Choose:", [q['a'], q['b'], q['c'], q['d']], key=f"q{idx}")
-    if st.button("Next"):
+    
+    # Options
+    opts = [f"A) {q['a']}", f"B) {q['b']}", f"C) {q['c']}", f"D) {q['d']}"]
+    choice = st.radio("Your Answer:", opts, key=f"q_{idx}")
+    st.session_state.answers[idx] = choice[0].lower()
+
+    # Navigation
+    if st.button("Next ➡️" if idx < len(st.session_state.questions)-1 else "🏁 Submit Exam"):
         if idx < len(st.session_state.questions)-1:
             st.session_state.current_idx += 1
-            st.rerun()
         else:
             st.session_state.done = True
-            st.rerun()
+        st.rerun()
 
+# --- 7. RESULTS ---
 if st.session_state.done:
-    st.success("Exam Complete!")
-    if st.button("Restart"):
+    score = sum(1 for i, q in enumerate(st.session_state.questions) if st.session_state.answers.get(i) == q['ans'])
+    st.balloons()
+    st.success(f"🏆 You scored {score} out of {len(st.session_state.questions)}!")
+    
+    if st.button("🔄 Try Another Chapter"):
         st.session_state.clear()
         st.rerun()
