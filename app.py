@@ -5,161 +5,188 @@ import time
 import os
 from datetime import datetime
 
-# --- 1. SYSTEM IDENTITY (The "Secret Sauce") ---
-# This tells the AI to stop acting like a robot and start acting like an examiner.
+# --- 1. SYSTEM IDENTITY & STYLE ---
 SYSTEM_PROMPT = """
-You are the Lead Developer for the Ethiopian National Entrance Examination. 
-Your task is to create high-stakes, competitive Multiple Choice Questions.
+ROLE: Lead Developer for the Ethiopian National Entrance Examination (EUEE).
+MISSION: Create original, high-level, and challenging Multiple Choice Questions (MCQs).
 
-STRICT STYLE RULES:
-1. NO REFERENCING: Never say 'According to the text', 'In this chapter', or 'As mentioned'. 
-2. DIRECTNESS: Ask the question directly. (e.g., 'What is the maximum height of...' NOT 'Based on the textbook, calculate...')
-3. DIFFICULTY: Focus on conceptual depth and mathematical calculations. 
-4. PHRASING: Use the formal tone of the Grade 12 National Exam (EUEE).
-5. NO TRIVIA: Do not ask about table of contents, authors, or unit numbers. Ask about the SCIENCE and MATH.
+STRICT GENERATION RULES:
+1. NO REPETITION: Do not copy sentences from the textbook. 
+2. SCENARIO-BASED: Create NEW word problems and conceptual scenarios based on the laws/facts in the book.
+3. CALCULATIONS: 40% of questions MUST be numerical. Invent realistic variables to test formula application.
+4. NO FILLER: Never say 'According to the text'. Ask: 'A 5kg block moves at...' or 'Which molecule represents...'
+5. UNIT ANCHORING: Stay strictly within the user's requested unit. Forbid any mention of other chapters.
 """
 
-# --- 2. CONFIG & THEME ---
-st.set_page_config(page_title="EthioExam National", page_icon="🇪🇹", layout="wide")
+# --- 2. CONFIGURATION ---
+st.set_page_config(page_title="EthioExam National Pro", page_icon="🇪🇹", layout="wide")
 
-# Dark Mode Compatible CSS
 st.markdown("""
     <style>
+    /* Dark/Light Mode Responsive Styling */
     .stRadio [role="radiogroup"] { 
         background-color: rgba(120, 120, 120, 0.1); 
-        border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
+        border: 2px solid #4CAF50; border-radius: 12px; padding: 25px; 
     }
-    div[data-testid="stMetricValue"] { color: #4CAF50; font-size: 40px; }
+    .stRadio label { font-size: 1.1rem !important; font-weight: 500; color: inherit !important; }
+    div[data-testid="stMetricValue"] { color: #4CAF50; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 except:
-    st.error("🔑 API Key Missing!")
+    st.error("🔑 API Key Missing in Secrets!")
 
-# --- 3. STORAGE & HISTORY ---
-def save_history(entry):
-    history_file = "exam_history.json"
+# --- 3. PERSISTENT STORAGE ---
+def save_exam_to_history(entry):
+    file = "exam_history.json"
     data = []
-    if os.path.exists(history_file):
-        with open(history_file, "r") as f: data = json.load(f)
+    if os.path.exists(file):
+        with open(file, "r") as f: data = json.load(f)
     data.append(entry)
-    with open(history_file, "w") as f: json.dump(data, f)
+    with open(file, "w") as f: json.dump(data, f)
 
-def load_history():
+def load_exam_history():
     if os.path.exists("exam_history.json"):
         with open("exam_history.json", "r") as f: return json.load(f)
     return []
 
 # --- 4. SESSION STATE ---
 if "exam" not in st.session_state:
-    st.session_state.exam = {"q": [], "idx": 0, "ans": {}, "done": False, "start": None, "time": 0, "unit": ""}
+    st.session_state.exam = {
+        "questions": [], "idx": 0, "user_ans": {}, 
+        "done": False, "start_time": None, "total_time": 0, "unit": ""
+    }
 
-# --- 5. SIDEBAR: HISTORY & CREATION ---
-st.sidebar.title("🇪🇹 Exam Portal")
+# --- 5. SIDEBAR ---
+st.sidebar.title("📚 Exam Portal")
 
-# View History Section
-past_exams = load_history()
-if past_exams:
-    with st.sidebar.expander("📂 Past Exam Results"):
-        for h in reversed(past_exams):
-            st.write(f"**{h['unit']}**: {h['score']}/{h['total']} ({h['date']})")
+# Historical Exams Tab
+history = load_exam_history()
+if history:
+    with st.sidebar.expander("📜 Your Previous Exams"):
+        for h in reversed(history):
+            st.write(f"**{h['unit']}** | {h['score']}/{h['total']} | {h['date']}")
 
 st.sidebar.divider()
 grade = st.sidebar.selectbox("Grade", [9, 10, 11, 12])
 sub = st.sidebar.selectbox("Subject", ["Maths", "Physics", "Biology", "Chemistry"])
-unit = st.sidebar.text_input("Enter Unit Topic", placeholder="e.g. Work and Energy")
-num_q = st.sidebar.slider("Number of Questions", 10, 50, 30)
+unit_name = st.sidebar.text_input("Specific Unit Topic", placeholder="e.g. Unit 3: Kinematics")
+count = st.sidebar.slider("Questions", 5, 50, 20)
 
-if st.sidebar.button("🔥 Generate National Exam"):
+if st.sidebar.button("🔥 Generate Hard National Exam"):
     path = f"textbooks/grade{grade}_{sub.lower()}.pdf"
     if os.path.exists(path):
-        with st.spinner("AI is analyzing the topic deepy..."):
-            f = genai.upload_file(path=path)
-            while f.state.name == "PROCESSING": time.sleep(1); f = genai.get_file(f.name)
+        with st.spinner("AI is crafting high-level questions..."):
+            file_ref = genai.upload_file(path=path)
+            while file_ref.state.name == "PROCESSING": 
+                time.sleep(1)
+                file_ref = genai.get_file(file_ref.name)
             
-            # Using Gemini 2.5 Flash Lite with System Instruction
+            # Use Gemini 3.1 Flash Lite (the newest 2026 model)
             model = genai.GenerativeModel(
-                model_name="gemini-2.5-flash-lite",
+                model_name="gemini-3.1-flash-lite",
                 system_instruction=SYSTEM_PROMPT
             )
             
-            prompt = f"Create a {num_q}-question Exam on '{unit}'. Ensure questions involve calculations where appropriate. Return ONLY JSON array: [{{'q':'','a':'','b':'','c':'','d':'','ans':'a','exp':''}}]"
+            # Specific Prompt to avoid Unit-Bumping
+            query = f"Analyze '{unit_name}' only. Create {count} conceptual and calculation-based MCQs. Format: JSON array ONLY."
             
             try:
-                res = model.generate_content([f, prompt])
-                raw = res.text.strip().replace("```json", "").replace("```", "")
+                res = model.generate_content([file_ref, query])
+                clean = res.text.strip().replace("```json", "").replace("```", "")
                 st.session_state.exam.update({
-                    "q": json.loads(raw), "idx": 0, "ans": {}, 
-                    "done": False, "start": time.time(), 
-                    "time": num_q * 120, "unit": unit
+                    "questions": json.loads(clean), "idx": 0, "user_ans": {}, 
+                    "done": False, "start_time": time.time(), 
+                    "total_time": count * 120, "unit": unit_name
                 })
                 st.rerun()
-            except Exception as e: st.error(f"Error: {e}")
+            except Exception as e: st.error(f"Generation Error: {e}")
+    else:
+        st.sidebar.error(f"PDF Not Found: {path}")
 
-# --- 6. LIVE EXAM ENGINE ---
+# --- 6. EXAM UI ---
 ex = st.session_state.exam
-if ex["q"] and not ex["done"]:
-    # REAL-TIME CLOCK
-    rem = ex["time"] - (time.time() - ex["start"])
-    if rem <= 0:
+if ex["questions"] and not ex["done"]:
+    # REAL-TIME TIMER LOGIC
+    elapsed = time.time() - ex["start_time"]
+    remaining = ex["total_time"] - elapsed
+    
+    if remaining <= 0:
         ex["done"] = True
+        st.warning("⏰ Time Expired! Auto-submitting...")
+        time.sleep(2)
         st.rerun()
 
-    c1, c2 = st.columns([3, 1])
-    c1.title(f"National Style: {ex['unit']}")
-    m, s = divmod(int(rem), 60)
-    c2.metric("Time Remaining", f"{m:02d}:{s:02d}")
+    # Dashboard
+    col1, col2 = st.columns([3, 1])
+    col1.title(f"📍 {ex['unit']}")
+    mins, secs = divmod(int(remaining), 60)
+    col2.metric("Timer", f"{mins:02d}:{secs:02d}")
 
-    q = ex["q"][ex["idx"]]
-    st.progress((ex["idx"] + 1) / len(ex["q"]))
+    # Question Card
+    q_idx = ex["idx"]
+    q_data = ex["questions"][q_idx]
+    st.progress((q_idx + 1) / len(ex["questions"]))
     
-    st.subheader(f"Question {ex['idx']+1}")
-    st.markdown(f"#### {q['q']}")
+    st.markdown(f"### Question {q_idx + 1}")
+    st.info(q_data['q'])
     
-    # INTERACTIVE CHOICES (No auto-select)
-    opts = [q['a'], q['b'], q['c'], q['d']]
-    labels = ["A", "B", "C", "D"]
+    # Options
+    opts = [q_data['a'], q_data['b'], q_data['c'], q_data['d']]
+    labels = ["a", "b", "c", "d"]
     
-    cur_idx = None
-    if ex["idx"] in ex["ans"]:
-        cur_idx = labels.index(ex["ans"][ex["idx"]].upper())
+    # Mapping previous answer for "Next/Back" persistence
+    current_choice = None
+    if q_idx in ex["user_ans"]:
+        current_choice = labels.index(ex["user_ans"][q_idx])
 
-    choice = st.radio("Select Answer:", opts, index=cur_idx, key=f"q{ex['idx']}")
+    user_selection = st.radio("Choose the best answer:", opts, index=current_choice, key=f"radio_{q_idx}")
     
-    if choice:
-        ex["ans"][ex["idx"]] = labels[opts.index(choice)].lower()
+    if user_selection:
+        ex["user_ans"][q_idx] = labels[opts.index(user_selection)]
 
-    # NAVIGATION
-    b1, b2, b3 = st.columns([1, 1, 1])
-    if b1.button("⬅️ Previous") and ex["idx"] > 0:
+    # Navigation
+    n1, n2, n3 = st.columns([1, 1, 1])
+    if n1.button("⬅️ Back") and q_idx > 0:
         ex["idx"] -= 1
         st.rerun()
-    if b3.button("Next ➡️" if ex["idx"] < len(ex["q"])-1 else "🏁 Submit"):
-        if ex["idx"] < len(ex["q"])-1:
+    
+    if n3.button("Next ➡️" if q_idx < len(ex["questions"])-1 else "🏁 Submit Exam"):
+        if q_idx < len(ex["questions"])-1:
             ex["idx"] += 1
             st.rerun()
         else:
             ex["done"] = True
             st.rerun()
 
-# --- 7. RESULTS & AUTO-SAVE ---
-if ex["done"] and ex["q"]:
-    score = sum(1 for i, q in enumerate(ex["q"]) if ex["ans"].get(i) == q['ans'])
-    st.title("🏆 Exam Result")
-    st.metric("Total Score", f"{score} / {len(ex['q'])}")
+# --- 7. FINAL SCORE & REVIEW ---
+if ex["done"] and ex["questions"]:
+    st.balloons()
+    score = sum(1 for i, q in enumerate(ex["questions"]) if ex["user_ans"].get(i) == q['ans'])
     
-    # Save to file
-    save_history({"unit": ex["unit"], "score": score, "total": len(ex["q"]), "date": datetime.now().strftime("%Y-%b-%d %H:%M")})
+    st.header("🏆 Performance Report")
+    st.metric("Final Score", f"{score} / {len(ex['questions'])}", f"{int(score/len(ex['questions'])*100)}%")
     
+    # Auto-save result
+    save_exam_to_history({
+        "unit": ex["unit"], "score": score, "total": len(ex["questions"]),
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M")
+    })
+
     st.divider()
-    for i, q in enumerate(ex["q"]):
-        is_right = ex["ans"].get(i) == q['ans']
-        with st.expander(f"Q{i+1}: {'✅' if is_right else '❌'} (Answer: {q['ans'].upper()})"):
-            st.write(f"**Question:** {q['q']}")
-            st.success(f"**Explanation:** {q['exp']}")
+    st.subheader("📝 Detailed Explanation Review")
     
-    if st.button("Take Another Exam"):
-        st.session_state.exam["q"] = []
+    for i, q in enumerate(ex["questions"]):
+        u_ans = ex["user_ans"].get(i, "None")
+        correct = u_ans == q['ans']
+        
+        with st.expander(f"Question {i+1}: {'✅' if correct else '❌'} (Answer: {q['ans'].upper()})"):
+            st.write(f"**Question:** {q['q']}")
+            st.write(f"**Your Answer:** {u_ans.upper()}")
+            st.success(f"**Why?** {q['exp']}")
+
+    if st.button("🔄 Take a Different Exam"):
+        st.session_state.exam["questions"] = []
         st.rerun()
