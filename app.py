@@ -9,26 +9,20 @@ from datetime import datetime
 SYSTEM_PROMPT = """
 You are the Lead Examiner for the Ethiopian National Secondary School Leaving Examination.
 
-Your job is to generate ORIGINAL and DIFFICULT exam questions.
+Generate ORIGINAL and DIFFICULT exam questions.
 
-Question Design Rules:
+Rules:
 - 40% numerical calculation questions requiring multi-step reasoning
 - 60% conceptual or analytical questions
-- Avoid simple memorization questions
-- Questions must require reasoning and deep understanding
-- Use realistic but invented values for calculations
+- Avoid memorization-only questions
+- Use realistic invented values for calculations
 - Distractor options must be plausible
-- Avoid obvious wrong answers
+- Avoid obviously wrong answers
+- Match the difficulty of the hardest Ethiopian national exams
 
-Difficulty:
-Questions must match the hardest Ethiopian National Exam level.
+Return ONLY a JSON array.
 
-Formatting Rules:
-Return ONLY a valid JSON array.
-Do not include markdown.
-Do not include any explanation outside JSON.
-
-Required JSON format:
+Required format:
 
 [
 {
@@ -38,7 +32,7 @@ Required JSON format:
 "c": "option",
 "d": "option",
 "ans": "a/b/c/d",
-"exp": "clear reasoning explanation"
+"exp": "clear explanation"
 }
 ]
 """
@@ -61,13 +55,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- GEMINI CONFIG ---
+# --- 3. GEMINI API ---
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
     st.error("🔑 API Key Missing!")
 
-# --- 3. STORAGE ---
+# --- 4. STORAGE ---
 def save_history(entry):
     file = "history.json"
     data = []
@@ -84,7 +78,7 @@ def save_history(entry):
     with open(file, "w") as f:
         json.dump(data, f)
 
-# --- 4. SESSION STATE ---
+# --- 5. SESSION STATE ---
 if "exam" not in st.session_state:
     st.session_state.exam = {
         "q": [],
@@ -96,7 +90,7 @@ if "exam" not in st.session_state:
         "unit": ""
     }
 
-# --- 5. SIDEBAR ---
+# --- 6. SIDEBAR ---
 st.sidebar.title("🇪🇹 Exam Portal")
 
 grade = st.sidebar.selectbox("Grade", [9, 10, 11, 12])
@@ -113,42 +107,37 @@ if st.sidebar.button("🔥 Generate Exam"):
         with st.spinner("Generating challenging exam questions..."):
 
             try:
-                # Upload textbook
-                f = genai.upload_file(path=path)
+                file = genai.upload_file(path=path)
 
-                while f.state.name == "PROCESSING":
+                while file.state.name == "PROCESSING":
                     time.sleep(1)
-                    f = genai.get_file(f.name)
+                    file = genai.get_file(file.name)
 
-                # Use stronger reasoning model
                 model = genai.GenerativeModel(
-                    "gemini-1.5-pro",
+                    "gemini-2.0-flash",
                     system_instruction=SYSTEM_PROMPT
                 )
 
-                # Strong question prompt
                 q_prompt = f"""
-Generate {count} challenging multiple-choice questions.
+Generate {count} challenging MCQ questions.
 
-Exam Context:
+Context:
 Grade: {grade}
 Subject: {sub}
 Unit: {unit}
 
 Requirements:
-- 40% numerical calculation questions
-- 60% conceptual or analytical questions
+- 40% numerical calculation problems
+- 60% conceptual reasoning questions
 - Calculation questions must require multiple steps
-- Use realistic invented numbers
-- Distractor answers should reflect common student mistakes
-- Avoid definition-based questions
-- Use formulas and concepts from the uploaded textbook
+- Use formulas and ideas from the textbook
+- Avoid definition questions
 
-Return ONLY valid JSON.
+Return ONLY JSON.
 """
 
                 res = model.generate_content(
-                    [f, q_prompt],
+                    [file, q_prompt],
                     generation_config={
                         "temperature": 0.9,
                         "top_p": 0.95,
@@ -159,7 +148,7 @@ Return ONLY valid JSON.
 
                 txt = res.text.strip()
 
-                # JSON Cleaner
+                # --- JSON CLEANER ---
                 if "```json" in txt:
                     txt = txt.split("```json")[1].split("```")[0].strip()
                 elif "```" in txt:
@@ -167,7 +156,6 @@ Return ONLY valid JSON.
 
                 parsed_questions = json.loads(txt)
 
-                # Validate structure
                 if all('q' in item for item in parsed_questions):
 
                     st.session_state.exam.update({
@@ -183,24 +171,23 @@ Return ONLY valid JSON.
                     st.rerun()
 
                 else:
-                    st.error("AI returned improperly formatted questions. Try again.")
+                    st.error("AI returned incorrect format. Try again.")
 
             except Exception as e:
                 st.error(f"Generation Error: {e}")
 
-# --- 6. EXAM ENGINE ---
+# --- 7. EXAM ENGINE ---
 ex = st.session_state.exam
 
 if ex["q"] and not ex["done"]:
 
-    # Timer
     rem = ex["time"] - (time.time() - ex["start"])
 
     if rem <= 0:
         ex["done"] = True
         st.rerun()
 
-    c1, c2 = st.columns([3, 1])
+    c1, c2 = st.columns([3,1])
 
     c1.title(f"📍 {ex['unit']}")
 
@@ -212,20 +199,18 @@ if ex["q"] and not ex["done"]:
     st.progress((ex["idx"] + 1) / len(ex["q"]))
 
     st.markdown(f"### Question {ex['idx'] + 1}")
-
-    st.info(q_data.get("q", "Question text missing"))
+    st.info(q_data.get('q', "Question missing"))
 
     opts = [
-        q_data.get("a", ""),
-        q_data.get("b", ""),
-        q_data.get("c", ""),
-        q_data.get("d", "")
+        q_data.get('a',''),
+        q_data.get('b',''),
+        q_data.get('c',''),
+        q_data.get('d','')
     ]
 
-    labels = ["a", "b", "c", "d"]
+    labels = ["a","b","c","d"]
 
     cur = None
-
     if ex["idx"] in ex["ans"]:
         cur = labels.index(ex["ans"][ex["idx"]])
 
@@ -239,16 +224,16 @@ if ex["q"] and not ex["done"]:
     if ans:
         ex["ans"][ex["idx"]] = labels[opts.index(ans)]
 
-    # Navigation
-    b1, b2, b3 = st.columns([1, 1, 1])
+    # --- NAVIGATION ---
+    b1,b2,b3 = st.columns([1,1,1])
 
     if b1.button("⬅️ Back") and ex["idx"] > 0:
         ex["idx"] -= 1
         st.rerun()
 
-    if b3.button("Next ➡️" if ex["idx"] < len(ex["q"]) - 1 else "🏁 Finish"):
+    if b3.button("Next ➡️" if ex["idx"] < len(ex["q"])-1 else "🏁 Finish"):
 
-        if ex["idx"] < len(ex["q"]) - 1:
+        if ex["idx"] < len(ex["q"])-1:
             ex["idx"] += 1
             st.rerun()
 
@@ -256,11 +241,11 @@ if ex["q"] and not ex["done"]:
             ex["done"] = True
             st.rerun()
 
-# --- 7. RESULTS ---
+# --- 8. RESULTS ---
 if ex["done"] and ex["q"]:
 
     score = sum(
-        1 for i, q in enumerate(ex["q"])
+        1 for i,q in enumerate(ex["q"])
         if ex["ans"].get(i) == q.get("ans")
     )
 
@@ -273,14 +258,13 @@ if ex["done"] and ex["q"]:
         "date": datetime.now().strftime("%Y-%m-%d")
     })
 
-    for i, q in enumerate(ex["q"]):
+    for i,q in enumerate(ex["q"]):
 
-        is_right = ex["ans"].get(i) == q.get("ans")
+        correct = ex["ans"].get(i) == q.get("ans")
 
-        with st.expander(f"Q{i+1}: {'✅' if is_right else '❌'}"):
+        with st.expander(f"Q{i+1}: {'✅' if correct else '❌'}"):
 
             st.write(f"**Question:** {q.get('q')}")
-
             st.success(f"**Explanation:** {q.get('exp')}")
 
     if st.button("New Exam"):
